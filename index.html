@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <title>Basic Pong HTML Game</title>
+    <meta charset="UTF-8" />
+    <style>
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+
+      #game {
+        background: black;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+
+        width: 100%;
+      }
+
+      #info {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 20px;
+        font-weight: bold;
+        /* Align center */
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+
+        width: 100%;
+      }
+      #title {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 40px;
+        font-weight: bold;
+        /* Align center */
+        text-align: center;
+        margin: 0;
+      }
+
+      #game-info {
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 20px;
+        font-weight: bold;
+        /* Align center */
+        text-align: center;
+        margin: 0;
+        /* border */
+        border-style: solid;
+        border-width: 2px;
+        border-color: black;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <canvas width="750" height="585" id="game"></canvas>
+    </div>
+    <div id="info">
+      <p id="title">Pong</p>
+      <p id="delay"></p>
+      <!-- switch button master or slave-->
+      <div class="container">
+        <div>
+          <button id="switch-button">Master</button>
+          <button id="game-status">Start</button>
+        </div>
+        <!-- Connection channel id input -->
+        <div>
+          <!-- Status -->
+          <label for="status" class="status" id="status">Status:</label>
+          <label for="topic_id" class="topic">Topic:</label>
+          <input type="text" id="topic_id" />
+          <button id="subscribe">Publish to</button>
+        </div>
+      </div>
+      <div id="game-info"></div>
+    </div>
+
+    <script>
+      let mqttClient;
+      /** @type {"running" | "paused"} */
+      let gameData;
+      let gameStatus = "paused";
+      // Create a ws connection
+      const host = "ws://amantedelacocacola.com:15001/mqtt";
+      const subscribeButton = document.getElementById("subscribe");
+      const switchButton = document.getElementById("switch-button");
+      const gameStatusButton = document.getElementById("game-status");
+      let status = "master";
+      const canvas = document.getElementById("game");
+      const gameinfo = document.getElementById("game-info");
+      const context = canvas.getContext("2d");
+      const grid = 15;
+      const paddleHeight = grid * 5; // 80
+      const maxPaddleY = canvas.height - grid - paddleHeight;
+      // Generate channel id random
+
+      function connectToBroker() {
+        const clientId = "client" + Math.random().toString(36).substring(7);
+        // Change this to point to your MQTT broker
+        const options = {
+          keepalive: 60,
+          clientId: clientId,
+          protocolId: "MQTT",
+          protocolVersion: 4,
+          clean: true,
+          reconnectPeriod: 1000,
+          connectTimeout: 30 * 1000,
+        };
+
+        mqttClient = mqtt.connect(host, options);
+
+        mqttClient.on("error", (err) => {
+          console.log("Error: ", err);
+          mqttClient.end();
+        });
+
+        mqttClient.on("reconnect", () => {
+          console.log("Reconnecting...");
+        });
+
+        mqttClient.on("connect", () => {
+          console.log("Client connected:" + clientId);
+        });
+
+        // Received
+        mqttClient.on("message", (topic, message, packet) => {
+          if (status === "master" && topic.endsWith("-controls")) {
+            const data = JSON.parse(message.toString());
+            console.log(topic, data);
+            ////rightPaddle.dy = 0;
+            rightPaddle.dy = data.rightPaddleDy;
+            return;
+          }
+          if (!topic.endsWith("-controls")) {
+            const data = JSON.parse(message.toString());
+            gameData = data;
+            gameinfo.innerHTML = `Left Pos - ${data.leftPaddleY} | Right Pos - ${data.rightPaddleY} ${data.ballX} ${data.ballY} ${data.ballDX} ${data.ballDY}`;
+          }
+        });
+      }
+
+      // On document ready
+      document.addEventListener("DOMContentLoaded", () => {
+        console.log("ready");
+        connectToBroker();
+      });
+      function subscribeToTopic() {
+        const topic = document.querySelector("#topic_id").value.trim();
+        if (topic) {
+          // const topic = document.querySelector("#topic").value.trim();
+          console.log(`Subscribing to Topic: ${topic}`);
+          mqttClient.subscribe(topic, { qos: 0 });
+
+          const status = document.getElementById("status");
+          status.style.color = "green";
+          status.value = "SUBSCRIBED";
+        }
+        if (status === "master") {
+          {
+            //Subscribe to a topic with suffix -slave-controls
+            const topic = document.querySelector("#topic_id").value.trim();
+            const slaveTopic = `${topic}-slave-controls`;
+            console.log(`Subscribing to Topic: ${slaveTopic}`);
+            mqttClient.subscribe(slaveTopic, { qos: 0 });
+          }
+        }
+      }
+      function unsubscribeToTopic() {
+        const status = document.querySelector("#status");
+        const topic = document.querySelector("#topic_id").value.trim();
+        console.log(`Unsubscribing to Topic: ${topic}`);
+
+        mqttClient.unsubscribe(topic, { qos: 0 });
+        status.style.color = "red";
+        status.value = "UNSUBSCRIBED";
+      }
+      //Must be json
+      function publishMessage(data, topic) {
+        //const topic = document.querySelector("#topic_id").value.trim();
+        const message = JSON.stringify(data);
+        //console.log(`Sending Topic: ${topic}, Message: ${message}`);
+        mqttClient.publish(topic, message, {
+          qos: 0,
+          retain: false,
+        });
+      }
+
+      subscribeButton.addEventListener("click", () => {
+        //check status
+        if (mqttClient.connected) {
+          subscribeToTopic();
+        }
+        //subscribeToTopic();
+      });
+
+      // On click switch button
+      switchButton.addEventListener("click", () => {
+        if (status === "master") {
+          status = "slave";
+          subscribeButton.textContent = "Subscribe to";
+          switchButton.textContent = "Slave";
+        } else {
+          status = "master";
+          switchButton.textContent = "Master";
+          subscribeButton.textContent = "Publish to";
+        }
+        console.log(status);
+      });
+
+      // On click game status button
+      gameStatusButton.addEventListener("click", () => {
+        if (gameStatus === "running") {
+          gameStatus = "paused";
+          gameStatusButton.textContent = "Resume";
+        } else {
+          gameStatus = "running";
+          gameStatusButton.textContent = "Pause";
+        }
+        console.log(gameStatus);
+      });
+
+      var paddleSpeed = 6;
+      var ballSpeed = 5;
+
+      const leftPaddle = {
+        // start in the middle of the game on the left side
+        x: grid * 2,
+        y: canvas.height / 2 - paddleHeight / 2,
+        width: grid,
+        height: paddleHeight,
+
+        // paddle velocity
+        dy: 0,
+      };
+      const rightPaddle = {
+        // start in the middle of the game on the right side
+        x: canvas.width - grid * 3,
+        y: canvas.height / 2 - paddleHeight / 2,
+        width: grid,
+        height: paddleHeight,
+
+        // paddle velocity
+        dy: 0,
+      };
+      const ball = {
+        // start in the middle of the game
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+        width: grid,
+        height: grid,
+
+        // keep track of when need to reset the ball position
+        resetting: false,
+
+        // ball velocity (start going to the top-right corner)
+        dx: ballSpeed,
+        dy: -ballSpeed,
+      };
+
+      // check for collision between two objects using axis-aligned bounding box (AABB)
+      // @see https://developer.mozilla.org/en-US/docs/Games/Techniques/2D_collision_detection
+      function collides(obj1, obj2) {
+        return (
+          obj1.x < obj2.x + obj2.width &&
+          obj1.x + obj1.width > obj2.x &&
+          obj1.y < obj2.y + obj2.height &&
+          obj1.y + obj1.height > obj2.y
+        );
+      }
+
+      // game loop
+      function loop() {
+        requestAnimationFrame(loop);
+        if (gameStatus === "paused") {
+          return;
+        }
+        context.clearRect(0, 0, canvas.width, canvas.height);
+
+        //So, if youre slave, you must show the movements only
+        if (status === "slave") {
+          
+          if (gameData) {
+            // En base a la variable gameData, dibujamos el canvas.
+            context.fillStyle = "white";
+            context.fillRect(
+              leftPaddle.x,
+              gameData.leftPaddleY,
+              leftPaddle.width,
+              leftPaddle.height
+            );
+            context.fillRect(
+              rightPaddle.x,
+              gameData.rightPaddleY,
+              rightPaddle.width,
+              rightPaddle.height
+            );
+            context.fillRect(
+              gameData.ballX,
+              gameData.ballY,
+              ball.width,
+              ball.height
+            );
+            context.fillStyle = "lightgrey";
+            context.fillRect(0, 0, canvas.width, grid);
+            context.fillRect(
+              0,
+              canvas.height - grid,
+              canvas.width,
+              canvas.height
+            );
+            for (let i = grid; i < canvas.height - grid; i += grid * 2) {
+              context.fillRect(canvas.width / 2 - grid / 2, i, grid, grid);
+            }
+            //Append delay en ms para que se vea la animacion, que viene en gameData.date, convertir contra fecha actual y calcular ms
+            const delay = new Date(gameData.date) - new Date();
+            const delayMs = Math.abs(delay % 1000);
+            const delayText = document.getElementById("delay");
+            delayText.innerHTML = `${delayMs}ms`;
+            
+
+          }
+
+          return;
+        }
+
+        // move paddles by their velocity
+        leftPaddle.y += leftPaddle.dy;
+        rightPaddle.y += rightPaddle.dy;
+        // prevent paddles from going through walls
+        if (leftPaddle.y < grid) {
+          leftPaddle.y = grid;
+        } else if (leftPaddle.y > maxPaddleY) {
+          leftPaddle.y = maxPaddleY;
+        }
+
+        if (rightPaddle.y < grid) {
+          rightPaddle.y = grid;
+        } else if (rightPaddle.y > maxPaddleY) {
+          rightPaddle.y = maxPaddleY;
+        }
+
+        // draw paddles
+        context.fillStyle = "white";
+        context.fillRect(
+          leftPaddle.x,
+          leftPaddle.y,
+          leftPaddle.width,
+          leftPaddle.height
+        );
+        context.fillRect(
+          rightPaddle.x,
+          rightPaddle.y,
+          rightPaddle.width,
+          rightPaddle.height
+        );
+
+        // move ball by its velocity
+        ball.x += ball.dx;
+        ball.y += ball.dy;
+
+        // prevent ball from going through walls by changing its velocity
+        if (ball.y < grid) {
+          ball.y = grid;
+          ball.dy *= -1;
+        } else if (ball.y + grid > canvas.height - grid) {
+          ball.y = canvas.height - grid * 2;
+          ball.dy *= -1;
+        }
+
+        // reset ball if it goes past paddle (but only if we haven't already done so)
+        if ((ball.x < 0 || ball.x > canvas.width) && !ball.resetting) {
+          ball.resetting = true;
+
+          // give some time for the player to recover before launching the ball again
+          setTimeout(() => {
+            ball.resetting = false;
+            ball.x = canvas.width / 2;
+            ball.y = canvas.height / 2;
+          }, 400);
+        }
+
+        // check to see if ball collides with paddle. if they do change x velocity
+        if (collides(ball, leftPaddle)) {
+          ball.dx *= -1;
+
+          // move ball next to the paddle otherwise the collision will happen again
+          // in the next frame
+          ball.x = leftPaddle.x + leftPaddle.width;
+        } else if (collides(ball, rightPaddle)) {
+          ball.dx *= -1;
+
+          // move ball next to the paddle otherwise the collision will happen again
+          // in the next frame
+          ball.x = rightPaddle.x - ball.width;
+        }
+
+        // draw ball
+        context.fillRect(ball.x, ball.y, ball.width, ball.height);
+        // draw walls
+        context.fillStyle = "lightgrey";
+        context.fillRect(0, 0, canvas.width, grid);
+        context.fillRect(0, canvas.height - grid, canvas.width, canvas.height);
+        // draw dotted line down the middle
+        for (let i = grid; i < canvas.height - grid; i += grid * 2) {
+          context.fillRect(canvas.width / 2 - grid / 2, i, grid, grid);
+        }
+
+        if (!ball.resetting) {
+          const data = {
+            leftPaddleY: leftPaddle.y,
+            rightPaddleY: rightPaddle.y,
+            ballX: ball.x,
+            ballY: ball.y,
+            ballDX: ball.dx,
+            ballDY: ball.dy,
+            date: Date.now(),
+            gameStatus
+          };
+          //console.log(data, "publishing!!");
+          const topic = document.querySelector("#topic_id").value.trim();
+          publishMessage(data, topic);
+          gameinfo.innerHTML = `Left Pos - ${leftPaddle.y} | Right Pos - ${rightPaddle.y} ${ball.x} ${ball.y} ${ball.dx} ${ball.dy}`;
+        }
+      }
+
+      // listen to keyboard events to move the paddles
+      document.addEventListener("keydown", function (e) {
+        // up arrow key
+        // if (e.which === 38) {
+        //   rightPaddle.dy = -paddleSpeed;
+        // }
+        // // down arrow key
+        // else if (e.which === 40) {
+        //   rightPaddle.dy = paddleSpeed;
+        // }
+        const topic = document.querySelector("#topic_id").value.trim();
+        if (status === "master") {
+          if (e.which === 38) {
+            leftPaddle.dy = -paddleSpeed;
+          }
+          // down arrow key
+          else if (e.which === 40) {
+            leftPaddle.dy = paddleSpeed;
+          }
+          // shutdown = setTimeout(() => {
+          //   leftPaddle.dy = 0;
+          // }, 200);
+        } else {
+          if (e.which === 38) {
+            publishMessage({ rightPaddleDy: -paddleSpeed }, `${topic}-slave-controls`);
+            rightPaddle.dy = -paddleSpeed;
+          } else if (e.which === 40) {
+            rightPaddle.dy = paddleSpeed;
+            publishMessage({ rightPaddleDy: paddleSpeed }, `${topic}-slave-controls`);
+          }
+        }
+
+        // // w key
+        // if (e.which === 87) {
+        //   leftPaddle.dy = -paddleSpeed;
+        // }
+        // // a key
+        // else if (e.which === 83) {
+        //   leftPaddle.dy = paddleSpeed;
+        // }
+      });
+
+      // listen to keyboard events to stop the paddle if key is released
+      document.addEventListener("keyup", function (e) {
+        const topic = document.querySelector("#topic_id").value.trim();
+        if (status === "master") {
+          if (e.which === 38 || e.which === 40) {
+            leftPaddle.dy = 0;
+          }
+        } else {
+          if (e.which === 38 || e.which === 40) {
+            publishMessage({ rightPaddleDy: 0 }, `${topic}-slave-controls`);
+            //rightPaddle.dy = 0;
+          }
+        }
+      });
+
+      // start the game
+      requestAnimationFrame(loop);
+    </script>
+  </body>
+</html>
